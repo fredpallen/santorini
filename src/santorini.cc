@@ -161,6 +161,7 @@ Moves get_legal_moves(const Board &board, int player) {
     // Add all moves that build on the just-vacated cell.
     for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
         Position start = board.position[player][pawn];
+        int start_height = board.height[start.x][start.y];
         // Prototype move for starting at this position with this pawn.
         Move move;
         move.pawn = pawn;
@@ -168,7 +169,9 @@ Moves get_legal_moves(const Board &board, int player) {
         // All valid moves will be able to build on the cell they just vacated.
         move.build = start;
         for (Position end : get_king_move_ends(start)) {
-            if (is_legal_target(board, end)) {
+            int end_height = board.height[end.x][end.y];
+            if (is_legal_target(board, end) &&
+                    (start_height + 1 >= end_height)) {
                 move.end = end;
                 moves.push_back(move);
             }
