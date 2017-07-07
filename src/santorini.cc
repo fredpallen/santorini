@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <tuple>
 
@@ -145,6 +146,9 @@ KingMoveEnds get_king_move_ends(Position start) {
 }
 
 // Returns whether the target position can be moved-to/built-upon.
+//
+// Checks that the height for the target is less than the max height and that
+// there is no pawn on the target.
 bool is_legal_target(const Board &board, Position target) {
     bool legal = board.height[target.x][target.y] < MAX_HEIGHT;
     for (int player = 0; player < 2; ++player) {
@@ -191,10 +195,7 @@ Moves get_legal_moves(const Board &board, int player) {
     return moves;
 }
 
-// Return the index into Moves for the selected move.
-//
-// Simple AI that looks ahead to the opponent's next move.
-int select_move(const Board &board, const Moves &moves, int player) {
+int get_obvious_move(const Board &board, const Moves &moves, int player) {
     // First see if any of the moves wins the game. If so, select that move.
     for (int i = 0; i < moves.size(); ++i) {
         Move move = moves[i];
@@ -226,8 +227,12 @@ int select_move(const Board &board, const Moves &moves, int player) {
             }
         }
     }
+    // No obvious move found, return -1.
+    return -1;
+}
 
-    // Check if any move gives the other player an immediate winning move.
+MaxlenVector<int, MAX_LEGAL_MOVES> get_blunders(
+        const Board &board, const Moves &moves, int player) {
     MaxlenVector<int, MAX_LEGAL_MOVES> blunders;
     for (int i = 0; i < moves.size(); ++i) {
         Position build = moves[i].build;
@@ -249,7 +254,75 @@ int select_move(const Board &board, const Moves &moves, int player) {
             }
         }
     }
+    return blunders;
+}
 
+// A player is a function that takes a board, a list of allowable moves, and a
+// player number to indicate whose turn is next, and returns an index into the
+// allowable moves list to select which move to take.
+using Player = int(const Board &board, const Moves &moves, int player);
+
+// Plays the game with the board as the starting state and the scratch space.
+//
+// Next is the index of the player who has the next move from the given
+// starting state (either 0 or 1).
+//
+// Returns the index of the winning player (either 0 or 1).
+template <bool verbose=false>
+int play_game(Board *board, int next, Player p0, Player p1) {
+    for (int i = 0;; ++i) {
+        if (verbose) { std::printf("Move %2d\n", i); }
+        Moves moves = get_legal_moves(*board, next);
+        if (!moves.size()) {
+            // Next player loses because they have no legal moves.
+            if (verbose) {
+                std::printf(
+                        "Player %d wins because player %d has no legal moves.\n",
+                        1 - next, next);
+            }
+            return 1 - next;
+        }
+        int index = next ? p1(*board, moves, next) : p0(*board, moves, next);
+        Move move = moves[index];
+        if (board->height[move.end.x][move.end.y] == MAX_HEIGHT - 1) {
+            // Next player wins because they stepped to the winning height.
+            if (verbose) {
+                std::printf(
+                        "Player %d wins by stepping onto (%d,%d)\n",
+                        next, move.end.x, move.end.y);
+            }
+            return next;
+        }
+        if (verbose) {
+            std::printf(
+                    "Player %d moves pawn %d from (%d,%d) to (%d,%d) and builds at (%d,%d)\n",
+                    next,
+                    move.pawn,
+                    move.start.x,
+                    move.start.y,
+                    move.end.x,
+                    move.end.y,
+                    move.build.x,
+                    move.build.y);
+        }
+        // Update board due to selected move.
+        board->position[next][move.pawn] = move.end;
+        ++board->height[move.build.x][move.build.y];
+        // Go to next player.
+        next = 1 - next;
+    }
+}
+
+// Return the index into Moves for the selected move.
+//
+// Simple AI that looks ahead to the opponent's next move.
+int select_move(const Board &board, const Moves &moves, int player) {
+    int obvious = get_obvious_move(board, moves, player);
+    if (obvious >= 0) {
+        return obvious;
+    }
+
+    auto blunders = get_blunders(board, moves, player);
     if (blunders.size() == moves.size()) {
         // All the moves are losers, so just pick the first one, you loser.
         return 0;
@@ -281,7 +354,50 @@ int select_move(const Board &board, const Moves &moves, int player) {
     return base + skip;
 }
 
+template <int ROLLOUT_COUNT>
+int select_move_by_rollout(const Board &board, const Moves &moves, int player) {
+    int obvious = get_obvious_move(board, moves, player);
+    if (obvious >= 0) {
+        return obvious;
+    }
+
+    auto blunders = get_blunders(board, moves, player);
+    if (blunders.size() == moves.size()) {
+        // All the moves are losers, so just pick the first one, you loser.
+        return 0;
+    }
+    int best_index = -1;
+    double best_score = std::numeric_limits<double>::lowest();
+    int blunder_index = 0;
+    for (int i = 0; i < moves.size(); ++i) {
+        if (blunders.size() && i == blunders[blunder_index]) {
+            ++blunder_index;
+            continue;
+        }
+        // Roll this move out several times using select_move for both players.
+        Board moved_board = board;
+        Move move = moves[i];
+        moved_board.position[player][move.pawn] = move.end;
+        ++moved_board.height[move.build.x][move.build.y];
+        double payoff = 0;
+        for (int trial = 0; trial < ROLLOUT_COUNT; ++trial) {
+            Board rollout_board = moved_board;
+            int winner = play_game(
+                    &rollout_board, 1 - player, select_move, select_move);
+            payoff += (winner == player) ? 1 : -1;
+        }
+        double average_payoff = payoff / ROLLOUT_COUNT;
+        if (average_payoff > best_score) {
+            best_score = average_payoff;
+            best_index = i;
+        }
+    }
+    return best_index;
+}
+
 int main() {
+    int counts[2] = {0, 0};
+    for (int trial = 0; trial < 100; ++trial) {
     Board board;
     std::memset(&board, 0, sizeof(board));
     int cell_indices[BOARD_WIDTH * BOARD_WIDTH];
@@ -297,57 +413,14 @@ int main() {
         }
     }
 
-    print_board(board);
-    std::printf("\n");
-
-    for (int i = 0;; ++i) {
-        // Move for player zero.
-        std::printf("Move %2d\n", 2*i + 1);
-        Moves moves = get_legal_moves(board, 0);
-        if (!moves.size()) {
-            std::printf("\nPlayer 1 wins because player 0 has no moves.\n");
-            break;
-        }
-        int index = select_move(board, moves, 0);
-        Move move = moves[index];
-        if (board.height[move.end.x][move.end.y] == MAX_HEIGHT - 1) {
-            std::printf(
-                    "\nPlayer 0 wins by stepping onto (%d,%d)\n",
-                    move.end.x, move.end.y);
-            break;
-        }
-        std::printf(
-                "Player 0 moves pawn %d from (%d,%d) to (%d,%d) "
-                "and builds at (%d,%d)\n",
-                move.pawn, move.start.x, move.start.y,
-                move.end.x, move.end.y, move.build.x, move.build.y);
-        board.position[0][move.pawn] = move.end;
-        ++board.height[move.build.x][move.build.y];
-
-        // Move for player one.
-        std::printf("Move %2d\n", 2*i + 2);
-        moves = get_legal_moves(board, 1);
-        if (!moves.size()) {
-            std::printf("\nPlayer 0 wins because player 1 has no moves.\n");
-            break;
-        }
-        index = select_move(board, moves, 1);
-        move = moves[index];
-        if (board.height[move.end.x][move.end.y] == MAX_HEIGHT - 1) {
-            std::printf(
-                    "\nPlayer 1 wins by stepping onto (%d,%d)\n",
-                    move.end.x, move.end.y);
-            break;
-        }
-        std::printf(
-                "Player 1 moves pawn %d from (%d,%d) to (%d,%d) "
-                "and builds at (%d,%d)\n",
-                move.pawn, move.start.x, move.start.y,
-                move.end.x, move.end.y, move.build.x, move.build.y);
-        board.position[1][move.pawn] = move.end;
-        ++board.height[move.build.x][move.build.y];
+    //print_board(board);
+    //std::printf("\n");
+    int winner = play_game<false>(
+            &board, 0, select_move_by_rollout<50>, select_move_by_rollout<50>);
+    ++counts[winner];
+    //std::printf("\n");
+    //print_board(board);
+    std::printf("\nPlayer %d wins!\n", winner);
     }
-
-    std::printf("\n");
-    print_board(board);
+    std::printf("\nPlayer 0 wins %d times, player 1 wins %d times.\n", counts[0], counts[1]);
 }
