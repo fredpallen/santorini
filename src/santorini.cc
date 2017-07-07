@@ -17,10 +17,6 @@ constexpr int MAX_HEIGHT = 4;
 // Each pawn could have 8 places to move and then 8 places to build;
 constexpr int MAX_LEGAL_MOVES = PAWN_COUNT * 8 * 8;
 
-// Random number generator stuff shared by everyone.
-std::random_device random_device;
-std::mt19937 rng(random_device());
-
 // A vector with a maximum length of N.
 //
 // It doesn't do checks for you though, so it's up to you not to overfill it.
@@ -260,7 +256,9 @@ MaxlenVector<int, MAX_LEGAL_MOVES> get_blunders(
 // A player is a function that takes a board, a list of allowable moves, and a
 // player number to indicate whose turn is next, and returns an index into the
 // allowable moves list to select which move to take.
-using Player = int(const Board &board, const Moves &moves, int player);
+template <typename URBG>
+using Player =
+    int(const Board &board, const Moves &moves, int player, URBG *rng);
 
 // Plays the game with the board as the starting state and the scratch space.
 //
@@ -268,8 +266,8 @@ using Player = int(const Board &board, const Moves &moves, int player);
 // starting state (either 0 or 1).
 //
 // Returns the index of the winning player (either 0 or 1).
-template <bool verbose=false>
-int play_game(Board *board, int next, Player p0, Player p1) {
+template <bool verbose=false, typename URBG>
+int play_game(Board *board, int next, Player<URBG> p0, Player<URBG> p1, URBG *rng) {
     for (int i = 0;; ++i) {
         if (verbose) { std::printf("Move %2d\n", i); }
         Moves moves = get_legal_moves(*board, next);
@@ -282,7 +280,9 @@ int play_game(Board *board, int next, Player p0, Player p1) {
             }
             return 1 - next;
         }
-        int index = next ? p1(*board, moves, next) : p0(*board, moves, next);
+        int index = next ?
+            p1(*board, moves, next, rng) :
+            p0(*board, moves, next, rng);
         Move move = moves[index];
         if (board->height[move.end.x][move.end.y] == MAX_HEIGHT - 1) {
             // Next player wins because they stepped to the winning height.
@@ -316,7 +316,8 @@ int play_game(Board *board, int next, Player p0, Player p1) {
 // Return the index into Moves for the selected move.
 //
 // Simple AI that looks ahead to the opponent's next move.
-int select_move(const Board &board, const Moves &moves, int player) {
+template <typename URBG>
+int select_move(const Board &board, const Moves &moves, int player, URBG *rng) {
     int obvious = get_obvious_move(board, moves, player);
     if (obvious >= 0) {
         return obvious;
@@ -331,7 +332,7 @@ int select_move(const Board &board, const Moves &moves, int player) {
     // Choose at random from among the non-losing moves.
     std::uniform_int_distribution<int> uni(
             0, moves.size() - blunders.size() - 1);
-    int rand = uni(rng);
+    int rand = uni(*rng);
     int skip = rand;
     int base = 0;
     for (int blunder : blunders) {
@@ -354,8 +355,9 @@ int select_move(const Board &board, const Moves &moves, int player) {
     return base + skip;
 }
 
-template <int ROLLOUT_COUNT>
-int select_move_by_rollout(const Board &board, const Moves &moves, int player) {
+template <int ROLLOUT_COUNT, typename URBG>
+int select_move_by_rollout(
+        const Board &board, const Moves &moves, int player, URBG *rng) {
     int obvious = get_obvious_move(board, moves, player);
     if (obvious >= 0) {
         return obvious;
@@ -383,7 +385,11 @@ int select_move_by_rollout(const Board &board, const Moves &moves, int player) {
         for (int trial = 0; trial < ROLLOUT_COUNT; ++trial) {
             Board rollout_board = moved_board;
             int winner = play_game(
-                    &rollout_board, 1 - player, select_move, select_move);
+                    &rollout_board,
+                    1 - player,
+                    select_move,
+                    select_move,
+                    rng);
             payoff += (winner == player) ? 1 : -1;
         }
         double average_payoff = payoff / ROLLOUT_COUNT;
@@ -395,32 +401,44 @@ int select_move_by_rollout(const Board &board, const Moves &moves, int player) {
     return best_index;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+    std::random_device random_device;
+    unsigned int seed = argc > 1 ? std::stoul(argv[1]) : random_device();
+    std::printf("Seed = %u\n", seed);
+    std::mt19937 rng(seed);
+
     int counts[2] = {0, 0};
     for (int trial = 0; trial < 100; ++trial) {
-    Board board;
-    std::memset(&board, 0, sizeof(board));
-    int cell_indices[BOARD_WIDTH * BOARD_WIDTH];
-    for (int i = 0; i < BOARD_WIDTH * BOARD_WIDTH; ++i) {
-        cell_indices[i] = i;
-    }
-    std::shuffle(cell_indices, cell_indices + BOARD_WIDTH * BOARD_WIDTH, rng);
-    for (int player = 0; player < 2; ++player) {
-        for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
-            int index = cell_indices[player * PAWN_COUNT + pawn];
-            board.position[player][pawn] =
-                Position(index % BOARD_WIDTH, index / BOARD_WIDTH);
+        Board board;
+        std::memset(&board, 0, sizeof(board));
+        int cell_indices[BOARD_WIDTH * BOARD_WIDTH];
+        for (int i = 0; i < BOARD_WIDTH * BOARD_WIDTH; ++i) {
+            cell_indices[i] = i;
         }
-    }
+        std::shuffle(cell_indices, cell_indices + BOARD_WIDTH * BOARD_WIDTH, rng);
+        for (int player = 0; player < 2; ++player) {
+            for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
+                int index = cell_indices[player * PAWN_COUNT + pawn];
+                board.position[player][pawn] =
+                    Position(index % BOARD_WIDTH, index / BOARD_WIDTH);
+            }
+        }
 
-    //print_board(board);
-    //std::printf("\n");
-    int winner = play_game<false>(
-            &board, 0, select_move_by_rollout<50>, select_move_by_rollout<50>);
-    ++counts[winner];
-    //std::printf("\n");
-    //print_board(board);
-    std::printf("\nPlayer %d wins!\n", winner);
+        //print_board(board);
+        //std::printf("\n");
+        int winner = play_game<false>(
+                &board,
+                0,
+                select_move_by_rollout<50>,
+                select_move_by_rollout<50>,
+                &rng);
+        ++counts[winner];
+        //std::printf("\n");
+        //print_board(board);
+        std::printf("Trial %3d won by player %d.\n", trial, winner);
     }
-    std::printf("\nPlayer 0 wins %d times, player 1 wins %d times.\n", counts[0], counts[1]);
+    std::printf(
+            "\nPlayer 0 wins %d times, player 1 wins %d times.\n",
+            counts[0],
+            counts[1]);
 }
