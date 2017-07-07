@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -104,21 +105,60 @@ using KingMoveEnds = MaxlenVector<Position, 8>;
 
 // Pretty-prints the board to stdout.
 void print_board(const Board &board) {
-    std::printf("Positions =\n");
+    std::array<std::array<char, 4*BOARD_WIDTH + 1>, 2*BOARD_WIDTH + 1> chars;
+    // Create cell divisions.
+    for (int y = 0; y < BOARD_WIDTH + 1; ++y) {
+        for (int x = 0; x < BOARD_WIDTH; ++x) {
+            chars[2*y][4*x] = '+';
+            chars[2*y][4*x + 1] = '-';
+            chars[2*y][4*x + 2] = '-';
+            chars[2*y][4*x + 3] = '-';
+        }
+        chars[2*y][4*BOARD_WIDTH] = '+';
+    }
+    for (int y = 0; y < BOARD_WIDTH; ++y) {
+        for (int x = 0; x < BOARD_WIDTH; ++x) {
+            chars[2*y + 1][4*x] = '|';
+            chars[2*y + 1][4*x + 1] = ' ';
+            chars[2*y + 1][4*x + 2] = ' ';
+            chars[2*y + 1][4*x + 3] = ' ';
+        }
+        chars[2*y + 1][4*BOARD_WIDTH] = '|';
+    }
+
+    // Put in player positions.
     for (int player = 0; player < 2; ++player) {
-        std::printf("  Player = %d\n", player);
+        char c = player ? 'B' : 'A';
         for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
             Position p = board.position[player][pawn];
-            std::printf("    (%d,%d)\n", p.x, p.y);
+            chars[2*p.y + 1][4*p.x + 3] = c;
         }
     }
-    std::printf("\nHeights =\n");
+
+    // Put in the heights.
     for (int y = 0; y < BOARD_WIDTH; ++y) {
-        std::printf("  ");
         for (int x = 0; x < BOARD_WIDTH; ++x) {
-            std::printf("%d", board.height[x][y]);
+            chars[2*y + 1][4*x + 2] = '0' + board.height[x][y];
         }
-        std::printf("\n");
+    }
+
+    // Do the printing.
+    std::printf("     ");
+    for (int x = 0; x < BOARD_WIDTH; ++x) {
+        std::printf("x=%d ", x);
+    }
+    std::printf("\n");
+    for (int y = 0; y < 2*BOARD_WIDTH + 1; ++y) {
+        if (y % 2) {
+            std::printf("y=%d ", (y - 1) / 2);
+        }
+        else {
+            std::printf("    ");
+        }
+        for (int x = 0; x < 4*BOARD_WIDTH + 1; ++x) {
+            std::putchar(chars[y][x]);
+        }
+        std::putchar('\n');
     }
 }
 
@@ -408,7 +448,7 @@ int main(int argc, char *argv[]) {
     std::mt19937 rng(seed);
 
     int counts[2] = {0, 0};
-    for (int trial = 0; trial < 100; ++trial) {
+    for (int trial = 0; trial < 1; ++trial) {
         Board board;
         std::memset(&board, 0, sizeof(board));
         int cell_indices[BOARD_WIDTH * BOARD_WIDTH];
@@ -424,8 +464,8 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        //print_board(board);
-        //std::printf("\n");
+        print_board(board);
+        std::printf("\n");
         int winner = play_game<false>(
                 &board,
                 0,
@@ -433,8 +473,8 @@ int main(int argc, char *argv[]) {
                 select_move_by_rollout<50>,
                 &rng);
         ++counts[winner];
-        //std::printf("\n");
-        //print_board(board);
+        std::printf("\n");
+        print_board(board);
         std::printf("Trial %3d won by player %d.\n", trial, winner);
     }
     std::printf(
