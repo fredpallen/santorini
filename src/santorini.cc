@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <array>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -106,25 +105,27 @@ using KingMoveEnds = MaxlenVector<Position, 8>;
 
 // Pretty-prints the board to stdout.
 void print_board(const Board &board) {
-    std::array<std::array<char, 4*BOARD_WIDTH + 1>, 2*BOARD_WIDTH + 1> chars;
+    char chars[2*BOARD_WIDTH + 1][5*BOARD_WIDTH + 1];
     // Create cell divisions.
     for (int y = 0; y < BOARD_WIDTH + 1; ++y) {
         for (int x = 0; x < BOARD_WIDTH; ++x) {
-            chars[2*y][4*x] = '+';
-            chars[2*y][4*x + 1] = '-';
-            chars[2*y][4*x + 2] = '-';
-            chars[2*y][4*x + 3] = '-';
+            chars[2*y][5*x] = '+';
+            chars[2*y][5*x + 1] = '-';
+            chars[2*y][5*x + 2] = '-';
+            chars[2*y][5*x + 3] = '-';
+            chars[2*y][5*x + 4] = '-';
         }
-        chars[2*y][4*BOARD_WIDTH] = '+';
+        chars[2*y][5*BOARD_WIDTH] = '+';
     }
     for (int y = 0; y < BOARD_WIDTH; ++y) {
         for (int x = 0; x < BOARD_WIDTH; ++x) {
-            chars[2*y + 1][4*x] = '|';
-            chars[2*y + 1][4*x + 1] = ' ';
-            chars[2*y + 1][4*x + 2] = ' ';
-            chars[2*y + 1][4*x + 3] = ' ';
+            chars[2*y + 1][5*x] = '|';
+            chars[2*y + 1][5*x + 1] = ' ';
+            chars[2*y + 1][5*x + 2] = ' ';
+            chars[2*y + 1][5*x + 3] = ' ';
+            chars[2*y + 1][5*x + 4] = ' ';
         }
-        chars[2*y + 1][4*BOARD_WIDTH] = '|';
+        chars[2*y + 1][5*BOARD_WIDTH] = '|';
     }
 
     // Put in player positions.
@@ -132,22 +133,23 @@ void print_board(const Board &board) {
         char c = player ? 'b' : 'a';
         for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
             Position p = board.position[player][pawn];
-            chars[2*p.y + 1][4*p.x + 2] = c;
-            chars[2*p.y + 1][4*p.x + 3] = '0' + pawn;
+            chars[2*p.y + 1][5*p.x + 2] = ':';
+            chars[2*p.y + 1][5*p.x + 3] = c;
+            chars[2*p.y + 1][5*p.x + 4] = '0' + pawn;
         }
     }
 
     // Put in the heights.
     for (int y = 0; y < BOARD_WIDTH; ++y) {
         for (int x = 0; x < BOARD_WIDTH; ++x) {
-            chars[2*y + 1][4*x + 1] = '0' + board.height[x][y];
+            chars[2*y + 1][5*x + 1] = '0' + board.height[x][y];
         }
     }
 
     // Do the printing.
     std::printf("     ");
     for (int x = 0; x < BOARD_WIDTH; ++x) {
-        std::printf("x=%d ", x);
+        std::printf("x=%d  ", x);
     }
     std::printf("\n");
     for (int y = 0; y < 2*BOARD_WIDTH + 1; ++y) {
@@ -157,7 +159,7 @@ void print_board(const Board &board) {
         else {
             std::printf("    ");
         }
-        for (int x = 0; x < 4*BOARD_WIDTH + 1; ++x) {
+        for (int x = 0; x < 5*BOARD_WIDTH + 1; ++x) {
             std::putchar(chars[y][x]);
         }
         std::putchar('\n');
