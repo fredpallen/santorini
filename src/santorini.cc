@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <random>
 #include <tuple>
@@ -128,17 +129,18 @@ void print_board(const Board &board) {
 
     // Put in player positions.
     for (int player = 0; player < 2; ++player) {
-        char c = player ? 'B' : 'A';
+        char c = player ? 'b' : 'a';
         for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
             Position p = board.position[player][pawn];
-            chars[2*p.y + 1][4*p.x + 3] = c;
+            chars[2*p.y + 1][4*p.x + 2] = c;
+            chars[2*p.y + 1][4*p.x + 3] = '0' + pawn;
         }
     }
 
     // Put in the heights.
     for (int y = 0; y < BOARD_WIDTH; ++y) {
         for (int x = 0; x < BOARD_WIDTH; ++x) {
-            chars[2*y + 1][4*x + 2] = '0' + board.height[x][y];
+            chars[2*y + 1][4*x + 1] = '0' + board.height[x][y];
         }
     }
 
@@ -353,6 +355,171 @@ int play_game(Board *board, int next, Player<URBG> p0, Player<URBG> p1, URBG *rn
     }
 }
 
+template <typename URBG>
+int human_player_select_move(const Board &board, const Moves &moves, int player, URBG *) {
+    print_board(board);
+    std::string player_char = player ? "b" : "a";
+    std::string expected_pawns[] = {player_char + "0", player_char + "1"};
+    int pawn;
+    Position end;
+    Position build;
+    while (true) {
+        std::string input;
+
+        // Get pawn.
+        pawn = 0;
+        while (true) {
+            std::cout << "Which pawn will you move (" << expected_pawns[0]
+                << " or " << expected_pawns[1] << ")\n> ";
+            std::cin >> input;
+            if (input != expected_pawns[0] && input != expected_pawns[1]) {
+                std::cout << "Invalid pawn selection, please enter "
+                    << expected_pawns[0] << " or " << expected_pawns[1] << ".\n";
+                continue;
+            }
+            if (input == expected_pawns[1]) {
+                pawn = 1;
+            }
+            break;
+        }
+        bool valid_pawn = false;
+        for (int i = 0; i < moves.size(); ++i) {
+            if (moves[i].pawn == pawn) {
+                valid_pawn = true;
+                break;
+            }
+        }
+        if (!valid_pawn) {
+            std::cout << "Pawn " << expected_pawns[pawn]
+                << " has no valid moves, please select the other pawn.\n";
+            continue;
+        }
+
+        // Get end.
+        Position start = board.position[player][pawn];
+        while (true) {
+            std::cout << "Which direction will you move\n> ";
+            char direction;
+            std::cin >> direction;
+            switch (direction) {
+                case '1': // fall-through.
+                case 'z':
+                    end.x = start.x - 1;
+                    end.y = start.y + 1;
+                    break;
+                case '2': // fall-through.
+                case 'x':
+                    end.x = start.x;
+                    end.y = start.y + 1;
+                    break;
+                case '3': // fall-through.
+                case 'c':
+                    end.x = start.x + 1;
+                    end.y = start.y + 1;
+                    break;
+                case '4': // fall-through.
+                case 'a':
+                    end.x = start.x - 1;
+                    end.y = start.y;
+                    break;
+                case '6': // fall-through.
+                case 'd':
+                    end.x = start.x + 1;
+                    end.y = start.y;
+                    break;
+                case '7': // fall-through.
+                case 'q':
+                    end.x = start.x - 1;
+                    end.y = start.y - 1;
+                    break;
+                case '8': // fall-through.
+                case 'w':
+                    end.x = start.x;
+                    end.y = start.y - 1;
+                    break;
+                case '9': // fall-through.
+                case 'e':
+                    end.x = start.x + 1;
+                    end.y = start.y - 1;
+                    break;
+                default:
+                    std::cout << "Invalid direction\n";
+                    continue;
+            }
+            bool valid_move = false;
+            for (int i = 0; i < moves.size(); ++i) {
+                if (moves[i].pawn == pawn && moves[i].end == end) {
+                    valid_move = true;
+                    break;
+                }
+            }
+            if (!valid_move) {
+                std::cout << "That move is not legal for that pawn. Try again.\n";
+                continue;
+            }
+            break;
+        }
+
+        // Get build.
+        while (true) {
+            std::cout << "Which direction will you build\n> ";
+            char direction;
+            std::cin >> direction;
+            switch (direction) {
+                case '1': // fall-through.
+                case 'z':
+                    build.x = end.x - 1;
+                    build.y = end.y + 1;
+                    break;
+                case '2': // fall-through.
+                case 'x':
+                    build.x = end.x;
+                    build.y = end.y + 1;
+                    break;
+                case '3': // fall-through.
+                case 'c':
+                    build.x = end.x + 1;
+                    build.y = end.y + 1;
+                    break;
+                case '4': // fall-through.
+                case 'a':
+                    build.x = end.x - 1;
+                    build.y = end.y;
+                    break;
+                case '6': // fall-through.
+                case 'd':
+                    build.x = end.x + 1;
+                    build.y = end.y;
+                    break;
+                case '7': // fall-through.
+                case 'q':
+                    build.x = end.x - 1;
+                    build.y = end.y - 1;
+                    break;
+                case '8': // fall-through.
+                case 'w':
+                    build.x = end.x;
+                    build.y = end.y - 1;
+                    break;
+                case '9': // fall-through.
+                case 'e':
+                    build.x = end.x + 1;
+                    build.y = end.y - 1;
+                    break;
+                default:
+                    std::cout << "Invalid direction\n";
+                    continue;
+            }
+            for (int i = 0; i < moves.size(); ++i) {
+                if (moves[i].pawn == pawn && moves[i].end == end && moves[i].build == build) {
+                    return i;
+                }
+            }
+            std::cout << "That build is not legal for that pawn and that move. Try again.\n";
+        }
+    }
+}
+
 // Return the index into Moves for the selected move.
 //
 // Simple AI that looks ahead to the opponent's next move.
@@ -469,7 +636,7 @@ int main(int argc, char *argv[]) {
         int winner = play_game<false>(
                 &board,
                 0,
-                select_move_by_rollout<50>,
+                human_player_select_move,
                 select_move_by_rollout<50>,
                 &rng);
         ++counts[winner];
