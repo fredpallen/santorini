@@ -233,83 +233,14 @@ Moves get_legal_moves(const Board &board, int player) {
     return moves;
 }
 
-int get_obvious_move(const Board &board, const Moves &moves, int player) {
-    // First see if any of the moves wins the game. If so, select that move.
-    for (int i = 0; i < moves.size(); ++i) {
-        Move move = moves[i];
-        if (board.height[move.end.x][move.end.y] == MAX_HEIGHT - 1) {
-            return i;
-        }
-    }
-
-    // Check if any move stops the other player from winning.
-    for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
-        Position them = board.position[1 - player][pawn];
-        if (board.height[them.x][them.y] == MAX_HEIGHT - 2) {
-            // This pawn is at the right height to win on the next move.
-            for (Position end : get_king_move_ends(them)) {
-                if (board.height[end.x][end.y] == MAX_HEIGHT - 1) {
-                    // This move will win the game for the opponent, so try to
-                    // build here. We know we can't move here because we
-                    // checked that above.
-                    for (int i = 0; i < moves.size(); ++i) {
-                        if (moves[i].build == end) {
-                            // This stops this particular winning move for the
-                            // opponent, but the opponent may have other
-                            // winning moves. In any case, we can only stop one
-                            // so do not bother checking for others.
-                            return i;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // No obvious move found, return -1.
-    return -1;
-}
-
-MaxlenVector<int, MAX_LEGAL_MOVES> get_blunders(
-        const Board &board, const Moves &moves, int player) {
-    MaxlenVector<int, MAX_LEGAL_MOVES> blunders;
-    for (int i = 0; i < moves.size(); ++i) {
-        Position build = moves[i].build;
-        if (board.height[build.x][build.y] == MAX_HEIGHT - 2) {
-            // This makes a tower of winning height,
-            // make sure no opponent is nearby.
-            for (int pawn = 0; pawn < 2; ++pawn) {
-                Position them = board.position[1 - player][pawn];
-                int dx = them.x - build.x;
-                int dy = them.y - build.y;
-                int d2 = dx*dx + dy*dy;  // Squared horizontal distance.
-                int height = board.height[them.x][them.y];
-                if (d2 <= 2 && height == MAX_HEIGHT - 2) {
-                    // Opponent is close enough, vertically and horizontally,
-                    // so do not choose this move.
-                    blunders.push_back(i);
-                    break;
-                }
-            }
-        }
-    }
-    return blunders;
-}
-
-// A player is a function that takes a board, a list of allowable moves, and a
-// player number to indicate whose turn is next, and returns an index into the
-// allowable moves list to select which move to take.
-template <typename URBG>
-using Player =
-    int(const Board &board, const Moves &moves, int player, URBG *rng);
-
 // Plays the game with the board as the starting state and the scratch space.
 //
 // Next is the index of the player who has the next move from the given
 // starting state (either 0 or 1).
 //
 // Returns the index of the winning player (either 0 or 1).
-template <bool verbose=false, typename URBG>
-int play_game(Board *board, int next, Player<URBG> p0, Player<URBG> p1, URBG *rng) {
+template <bool verbose=false, typename P0, typename P1>
+int play_game(Board *board, int next, P0 *p0, P1 *p1) {
     for (int i = 0;; ++i) {
         if (verbose) { std::printf("Move %2d\n", i); }
         Moves moves = get_legal_moves(*board, next);
@@ -323,8 +254,8 @@ int play_game(Board *board, int next, Player<URBG> p0, Player<URBG> p1, URBG *rn
             return 1 - next;
         }
         int index = next ?
-            p1(*board, moves, next, rng) :
-            p0(*board, moves, next, rng);
+            p1->select_move(*board, moves, next) :
+            p0->select_move(*board, moves, next);
         Move move = moves[index];
         if (board->height[move.end.x][move.end.y] == MAX_HEIGHT - 1) {
             // Next player wins because they stepped to the winning height.
@@ -355,228 +286,322 @@ int play_game(Board *board, int next, Player<URBG> p0, Player<URBG> p1, URBG *rn
     }
 }
 
-Position get_new_position_from_human_entry(const Position &start, char entry) {
-    Position end;
-    switch (entry) {
-        case '1': // fall-through.
-        case 'z':
-            end.x = start.x - 1;
-            end.y = start.y + 1;
-            break;
-        case '2': // fall-through.
-        case 'x':
-            end.x = start.x;
-            end.y = start.y + 1;
-            break;
-        case '3': // fall-through.
-        case 'c':
-            end.x = start.x + 1;
-            end.y = start.y + 1;
-            break;
-        case '4': // fall-through.
-        case 'a':
-            end.x = start.x - 1;
-            end.y = start.y;
-            break;
-        case '6': // fall-through.
-        case 'd':
-            end.x = start.x + 1;
-            end.y = start.y;
-            break;
-        case '7': // fall-through.
-        case 'q':
-            end.x = start.x - 1;
-            end.y = start.y - 1;
-            break;
-        case '8': // fall-through.
-        case 'w':
-            end.x = start.x;
-            end.y = start.y - 1;
-            break;
-        case '9': // fall-through.
-        case 'e':
-            end.x = start.x + 1;
-            end.y = start.y - 1;
-            break;
-        default:
-            end.x = -1;
-            end.y = -1;
-    }
-    return end;
-}
+// Simple AI that looks ahead to the opponent's next move.
+class SimplePlayer {
+    public:
+        SimplePlayer(std::mt19937 *rng) : rng_(rng) {}
 
-template <typename URBG>
-int human_player_select_move(const Board &board, const Moves &moves, int player, URBG *) {
-    print_board(board);
-    std::string player_char = player ? "b" : "a";
-    std::string expected_pawns[] = {player_char + "0", player_char + "1"};
-    int pawn;
-    Position end;
-    Position build;
-    while (true) {
-        std::string input;
+        int select_move(const Board &board, const Moves &moves, int player) {
+            int obvious = get_obvious_move(board, moves, player);
+            if (obvious >= 0) {
+                return obvious;
+            }
 
-        // Get pawn.
-        pawn = 0;
-        while (true) {
-            std::cout << "Which pawn will you move (" << expected_pawns[0]
-                << " or " << expected_pawns[1] << ")\n> ";
-            std::cin >> input;
-            if (input != expected_pawns[0] && input != expected_pawns[1]) {
-                std::cout << "Invalid pawn selection, please enter "
-                    << expected_pawns[0] << " or " << expected_pawns[1] << ".\n";
-                continue;
+            auto blunders = get_blunders(board, moves, player);
+            if (blunders.size() == moves.size()) {
+                // All the moves are losers, so just pick the first one,
+                // you loser.
+                return 0;
             }
-            if (input == expected_pawns[1]) {
-                pawn = 1;
-            }
-            break;
-        }
-        bool valid_pawn = false;
-        for (int i = 0; i < moves.size(); ++i) {
-            if (moves[i].pawn == pawn) {
-                valid_pawn = true;
-                break;
-            }
-        }
-        if (!valid_pawn) {
-            std::cout << "Pawn " << expected_pawns[pawn]
-                << " has no valid moves, please select the other pawn.\n";
-            continue;
-        }
 
-        // Get end.
-        Position start = board.position[player][pawn];
-        while (true) {
-            std::cout << "Which direction will you move\n> ";
-            char direction;
-            std::cin >> direction;
-            end = get_new_position_from_human_entry(start, direction);
-            if (end.x < 0) {
-                std::cout << "Invalid move direction\n";
-                continue;
-            }
-            bool valid_move = false;
-            for (int i = 0; i < moves.size(); ++i) {
-                if (moves[i].pawn == pawn && moves[i].end == end) {
-                    valid_move = true;
-                    break;
+            // Choose at random from among the non-losing moves.
+            std::uniform_int_distribution<int> uni(
+                    0, moves.size() - blunders.size() - 1);
+            int rand = uni(*rng_);
+            int skip = rand;
+            int base = 0;
+            for (int blunder : blunders) {
+                if (base + skip < blunder) {
+                    return base + skip;
                 }
+                skip -= blunder - base;
+                base = blunder + 1;
             }
-            if (!valid_move) {
-                std::cout << "That move is not legal for that pawn. Try again.\n";
-                continue;
+
+            if (base + skip >= moves.size()) {
+                // It shouldn't be possible to get here.
+                std::fprintf(
+                        stderr,
+                        "Couldn't find %d winners from "
+                        "%d moves minus %d losers\n",
+                        rand, moves.size(), blunders.size());
+                std::exit(EXIT_FAILURE);
             }
-            break;
+
+            return base + skip;
         }
 
-        // Get build.
-        while (true) {
-            std::cout << "Which direction will you build\n> ";
-            char direction;
-            std::cin >> direction;
-            build = get_new_position_from_human_entry(end, direction);
-            if (build.x < 0) {
-                std::cout << "Invalid build direction\n";
-                continue;
-            }
+    protected:
+        std::mt19937 *rng_;
+
+        int get_obvious_move(
+                const Board &board, const Moves &moves, int player) {
+            // First see if any of the moves wins the game.
+            // If so, select that move.
             for (int i = 0; i < moves.size(); ++i) {
-                if (moves[i].pawn == pawn && moves[i].end == end && moves[i].build == build) {
+                Move move = moves[i];
+                if (board.height[move.end.x][move.end.y] == MAX_HEIGHT - 1) {
                     return i;
                 }
             }
-            std::cout << "That build is not legal for that pawn and that move. Try again.\n";
+
+            // Check if any move stops the other player from winning.
+            for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
+                Position them = board.position[1 - player][pawn];
+                if (board.height[them.x][them.y] == MAX_HEIGHT - 2) {
+                    // This pawn is at the right height to win on the next move.
+                    for (Position end : get_king_move_ends(them)) {
+                        if (board.height[end.x][end.y] == MAX_HEIGHT - 1) {
+                            // This move will win the game for the opponent,
+                            // so try to build here. We know we can't move here
+                            // because we checked that above.
+                            for (int i = 0; i < moves.size(); ++i) {
+                                if (moves[i].build == end) {
+                                    // This stops this particular winning move
+                                    // for the opponent, but the opponent may
+                                    // have other winning moves. In any case,
+                                    // we can only stop one so do not bother
+                                    // checking for others.
+                                    return i;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // No obvious move found, return -1.
+            return -1;
         }
-    }
-}
 
-// Return the index into Moves for the selected move.
-//
-// Simple AI that looks ahead to the opponent's next move.
-template <typename URBG>
-int select_move(const Board &board, const Moves &moves, int player, URBG *rng) {
-    int obvious = get_obvious_move(board, moves, player);
-    if (obvious >= 0) {
-        return obvious;
-    }
-
-    auto blunders = get_blunders(board, moves, player);
-    if (blunders.size() == moves.size()) {
-        // All the moves are losers, so just pick the first one, you loser.
-        return 0;
-    }
-
-    // Choose at random from among the non-losing moves.
-    std::uniform_int_distribution<int> uni(
-            0, moves.size() - blunders.size() - 1);
-    int rand = uni(*rng);
-    int skip = rand;
-    int base = 0;
-    for (int blunder : blunders) {
-        if (base + skip < blunder) {
-            return base + skip;
+        MaxlenVector<int, MAX_LEGAL_MOVES> get_blunders(
+                const Board &board, const Moves &moves, int player) {
+            MaxlenVector<int, MAX_LEGAL_MOVES> blunders;
+            for (int i = 0; i < moves.size(); ++i) {
+                Position build = moves[i].build;
+                if (board.height[build.x][build.y] == MAX_HEIGHT - 2) {
+                    // This makes a tower of winning height,
+                    // make sure no opponent is nearby.
+                    for (int pawn = 0; pawn < 2; ++pawn) {
+                        Position them = board.position[1 - player][pawn];
+                        int dx = them.x - build.x;
+                        int dy = them.y - build.y;
+                        int d2 = dx*dx + dy*dy;  // Squared horizontal distance.
+                        int height = board.height[them.x][them.y];
+                        if (d2 <= 2 && height == MAX_HEIGHT - 2) {
+                            // Opponent is close enough, vertically and
+                            // horizontally, so do not choose this move.
+                            blunders.push_back(i);
+                            break;
+                        }
+                    }
+                }
+            }
+            return blunders;
         }
-        skip -= blunder - base;
-        base = blunder + 1;
-    }
+};
 
-    if (base + skip >= moves.size()) {
-        // It shouldn't be possible to get here.
-        std::fprintf(
-                stderr,
-                "Couldn't find %d winners from %d moves minus %d losers\n",
-                rand, moves.size(), blunders.size());
-        std::exit(EXIT_FAILURE);
-    }
+class SimpleRolloutPlayer : public SimplePlayer {
+    public:
+        SimpleRolloutPlayer(int rollout_count, std::mt19937 *rng)
+            : SimplePlayer(rng), rollout_count_(rollout_count) {}
 
-    return base + skip;
-}
+        int select_move(const Board &board, const Moves &moves, int player) {
+            int obvious = get_obvious_move(board, moves, player);
+            if (obvious >= 0) {
+                return obvious;
+            }
 
-template <int ROLLOUT_COUNT, typename URBG>
-int select_move_by_rollout(
-        const Board &board, const Moves &moves, int player, URBG *rng) {
-    int obvious = get_obvious_move(board, moves, player);
-    if (obvious >= 0) {
-        return obvious;
-    }
-
-    auto blunders = get_blunders(board, moves, player);
-    if (blunders.size() == moves.size()) {
-        // All the moves are losers, so just pick the first one, you loser.
-        return 0;
-    }
-    int best_index = -1;
-    double best_score = std::numeric_limits<double>::lowest();
-    int blunder_index = 0;
-    for (int i = 0; i < moves.size(); ++i) {
-        if (blunders.size() && i == blunders[blunder_index]) {
-            ++blunder_index;
-            continue;
+            auto blunders = get_blunders(board, moves, player);
+            if (blunders.size() == moves.size()) {
+                // All the moves are losers, so just pick the first one,
+                // you loser.
+                return 0;
+            }
+            SimplePlayer player_object(rng_);
+            int best_index = -1;
+            double best_score = std::numeric_limits<double>::lowest();
+            int blunder_index = 0;
+            for (int i = 0; i < moves.size(); ++i) {
+                if (blunders.size() && i == blunders[blunder_index]) {
+                    ++blunder_index;
+                    continue;
+                }
+                // Roll this move out several times using SimplePlayer for both
+                // players.
+                Board moved_board = board;
+                Move move = moves[i];
+                moved_board.position[player][move.pawn] = move.end;
+                ++moved_board.height[move.build.x][move.build.y];
+                double payoff = 0;
+                for (int trial = 0; trial < rollout_count_; ++trial) {
+                    Board rollout_board = moved_board;
+                    int winner = play_game(
+                            &rollout_board,
+                            1 - player,
+                            &player_object,
+                            &player_object);
+                    payoff += (winner == player) ? 1 : -1;
+                }
+                double average_payoff = payoff / rollout_count_;
+                if (average_payoff > best_score) {
+                    best_score = average_payoff;
+                    best_index = i;
+                }
+            }
+            return best_index;
         }
-        // Roll this move out several times using select_move for both players.
-        Board moved_board = board;
-        Move move = moves[i];
-        moved_board.position[player][move.pawn] = move.end;
-        ++moved_board.height[move.build.x][move.build.y];
-        double payoff = 0;
-        for (int trial = 0; trial < ROLLOUT_COUNT; ++trial) {
-            Board rollout_board = moved_board;
-            int winner = play_game(
-                    &rollout_board,
-                    1 - player,
-                    select_move,
-                    select_move,
-                    rng);
-            payoff += (winner == player) ? 1 : -1;
+
+    private:
+        int rollout_count_;
+};
+
+class HumanPlayer {
+    public:
+        int select_move(const Board &board, const Moves &moves, int player) {
+            print_board(board);
+            std::string player_label = player ? "b" : "a";
+            std::string expected_pawns[] =
+            {player_label + "0", player_label + "1"};
+            int pawn;
+            Position end;
+            Position build;
+            while (true) {
+                std::string input;
+
+                // Get pawn.
+                pawn = 0;
+                while (true) {
+                    std::cout << "Which pawn will you move ("
+                        << expected_pawns[0]
+                        << " or " << expected_pawns[1] << ")\n> ";
+                    std::cin >> input;
+                    if (input != expected_pawns[0] &&
+                            input != expected_pawns[1]) {
+                        std::cout << "Invalid pawn selection, please enter "
+                            << expected_pawns[0] << " or "
+                            << expected_pawns[1] << ".\n";
+                        continue;
+                    }
+                    if (input == expected_pawns[1]) {
+                        pawn = 1;
+                    }
+                    break;
+                }
+                bool valid_pawn = false;
+                for (int i = 0; i < moves.size(); ++i) {
+                    if (moves[i].pawn == pawn) {
+                        valid_pawn = true;
+                        break;
+                    }
+                }
+                if (!valid_pawn) {
+                    std::cout << "Pawn " << expected_pawns[pawn]
+                        << " has no valid moves, "
+                        << "please select the other pawn.\n";
+                    continue;
+                }
+
+                // Get end.
+                Position start = board.position[player][pawn];
+                while (true) {
+                    std::cout << "Which direction will you move\n> ";
+                    char direction;
+                    std::cin >> direction;
+                    end = get_new_position(start, direction);
+                    if (end.x < 0) {
+                        std::cout << "Invalid move direction\n";
+                        continue;
+                    }
+                    bool valid_move = false;
+                    for (int i = 0; i < moves.size(); ++i) {
+                        if (moves[i].pawn == pawn && moves[i].end == end) {
+                            valid_move = true;
+                            break;
+                        }
+                    }
+                    if (!valid_move) {
+                        std::cout << "That move is not legal for that pawn. "
+                            "Try again.\n";
+                        continue;
+                    }
+                    break;
+                }
+
+                // Get build.
+                while (true) {
+                    std::cout << "Which direction will you build\n> ";
+                    char direction;
+                    std::cin >> direction;
+                    build = get_new_position(end, direction);
+                    if (build.x < 0) {
+                        std::cout << "Invalid build direction\n";
+                        continue;
+                    }
+                    for (int i = 0; i < moves.size(); ++i) {
+                        if (moves[i].pawn == pawn &&
+                                moves[i].end == end &&
+                                moves[i].build == build) {
+                            return i;
+                        }
+                    }
+                    std::cout
+                        << "That build is not legal for that pawn "
+                        << "and that move. Try again.\n";
+                }
+            }
         }
-        double average_payoff = payoff / ROLLOUT_COUNT;
-        if (average_payoff > best_score) {
-            best_score = average_payoff;
-            best_index = i;
+
+    private:
+        Position get_new_position(const Position &start, char entry) {
+            Position end;
+            switch (entry) {
+                case '1': // fall-through.
+                case 'z':
+                    end.x = start.x - 1;
+                    end.y = start.y + 1;
+                    break;
+                case '2': // fall-through.
+                case 'x':
+                    end.x = start.x;
+                    end.y = start.y + 1;
+                    break;
+                case '3': // fall-through.
+                case 'c':
+                    end.x = start.x + 1;
+                    end.y = start.y + 1;
+                    break;
+                case '4': // fall-through.
+                case 'a':
+                    end.x = start.x - 1;
+                    end.y = start.y;
+                    break;
+                case '6': // fall-through.
+                case 'd':
+                    end.x = start.x + 1;
+                    end.y = start.y;
+                    break;
+                case '7': // fall-through.
+                case 'q':
+                    end.x = start.x - 1;
+                    end.y = start.y - 1;
+                    break;
+                case '8': // fall-through.
+                case 'w':
+                    end.x = start.x;
+                    end.y = start.y - 1;
+                    break;
+                case '9': // fall-through.
+                case 'e':
+                    end.x = start.x + 1;
+                    end.y = start.y - 1;
+                    break;
+                default:
+                    end.x = -1;
+                    end.y = -1;
+            }
+            return end;
         }
-    }
-    return best_index;
-}
+};
 
 int main(int argc, char *argv[]) {
     std::random_device random_device;
@@ -585,6 +610,8 @@ int main(int argc, char *argv[]) {
     std::mt19937 rng(seed);
 
     int counts[2] = {0, 0};
+    HumanPlayer player0;
+    SimpleRolloutPlayer player1(100, &rng);
     for (int trial = 0; trial < 1; ++trial) {
         Board board;
         std::memset(&board, 0, sizeof(board));
@@ -603,12 +630,7 @@ int main(int argc, char *argv[]) {
 
         print_board(board);
         std::printf("\n");
-        int winner = play_game<false>(
-                &board,
-                0,
-                human_player_select_move,
-                select_move_by_rollout<100>,
-                &rng);
+        int winner = play_game<false>(&board, 0, &player0, &player1);
         ++counts[winner];
         std::printf("\n");
         print_board(board);
