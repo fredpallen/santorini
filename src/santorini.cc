@@ -355,6 +355,56 @@ int play_game(Board *board, int next, Player<URBG> p0, Player<URBG> p1, URBG *rn
     }
 }
 
+Position get_new_position_from_human_entry(const Position &start, char entry) {
+    Position end;
+    switch (entry) {
+        case '1': // fall-through.
+        case 'z':
+            end.x = start.x - 1;
+            end.y = start.y + 1;
+            break;
+        case '2': // fall-through.
+        case 'x':
+            end.x = start.x;
+            end.y = start.y + 1;
+            break;
+        case '3': // fall-through.
+        case 'c':
+            end.x = start.x + 1;
+            end.y = start.y + 1;
+            break;
+        case '4': // fall-through.
+        case 'a':
+            end.x = start.x - 1;
+            end.y = start.y;
+            break;
+        case '6': // fall-through.
+        case 'd':
+            end.x = start.x + 1;
+            end.y = start.y;
+            break;
+        case '7': // fall-through.
+        case 'q':
+            end.x = start.x - 1;
+            end.y = start.y - 1;
+            break;
+        case '8': // fall-through.
+        case 'w':
+            end.x = start.x;
+            end.y = start.y - 1;
+            break;
+        case '9': // fall-through.
+        case 'e':
+            end.x = start.x + 1;
+            end.y = start.y - 1;
+            break;
+        default:
+            end.x = -1;
+            end.y = -1;
+    }
+    return end;
+}
+
 template <typename URBG>
 int human_player_select_move(const Board &board, const Moves &moves, int player, URBG *) {
     print_board(board);
@@ -401,50 +451,10 @@ int human_player_select_move(const Board &board, const Moves &moves, int player,
             std::cout << "Which direction will you move\n> ";
             char direction;
             std::cin >> direction;
-            switch (direction) {
-                case '1': // fall-through.
-                case 'z':
-                    end.x = start.x - 1;
-                    end.y = start.y + 1;
-                    break;
-                case '2': // fall-through.
-                case 'x':
-                    end.x = start.x;
-                    end.y = start.y + 1;
-                    break;
-                case '3': // fall-through.
-                case 'c':
-                    end.x = start.x + 1;
-                    end.y = start.y + 1;
-                    break;
-                case '4': // fall-through.
-                case 'a':
-                    end.x = start.x - 1;
-                    end.y = start.y;
-                    break;
-                case '6': // fall-through.
-                case 'd':
-                    end.x = start.x + 1;
-                    end.y = start.y;
-                    break;
-                case '7': // fall-through.
-                case 'q':
-                    end.x = start.x - 1;
-                    end.y = start.y - 1;
-                    break;
-                case '8': // fall-through.
-                case 'w':
-                    end.x = start.x;
-                    end.y = start.y - 1;
-                    break;
-                case '9': // fall-through.
-                case 'e':
-                    end.x = start.x + 1;
-                    end.y = start.y - 1;
-                    break;
-                default:
-                    std::cout << "Invalid direction\n";
-                    continue;
+            end = get_new_position_from_human_entry(start, direction);
+            if (end.x < 0) {
+                std::cout << "Invalid move direction\n";
+                continue;
             }
             bool valid_move = false;
             for (int i = 0; i < moves.size(); ++i) {
@@ -465,50 +475,10 @@ int human_player_select_move(const Board &board, const Moves &moves, int player,
             std::cout << "Which direction will you build\n> ";
             char direction;
             std::cin >> direction;
-            switch (direction) {
-                case '1': // fall-through.
-                case 'z':
-                    build.x = end.x - 1;
-                    build.y = end.y + 1;
-                    break;
-                case '2': // fall-through.
-                case 'x':
-                    build.x = end.x;
-                    build.y = end.y + 1;
-                    break;
-                case '3': // fall-through.
-                case 'c':
-                    build.x = end.x + 1;
-                    build.y = end.y + 1;
-                    break;
-                case '4': // fall-through.
-                case 'a':
-                    build.x = end.x - 1;
-                    build.y = end.y;
-                    break;
-                case '6': // fall-through.
-                case 'd':
-                    build.x = end.x + 1;
-                    build.y = end.y;
-                    break;
-                case '7': // fall-through.
-                case 'q':
-                    build.x = end.x - 1;
-                    build.y = end.y - 1;
-                    break;
-                case '8': // fall-through.
-                case 'w':
-                    build.x = end.x;
-                    build.y = end.y - 1;
-                    break;
-                case '9': // fall-through.
-                case 'e':
-                    build.x = end.x + 1;
-                    build.y = end.y - 1;
-                    break;
-                default:
-                    std::cout << "Invalid direction\n";
-                    continue;
+            build = get_new_position_from_human_entry(end, direction);
+            if (build.x < 0) {
+                std::cout << "Invalid build direction\n";
+                continue;
             }
             for (int i = 0; i < moves.size(); ++i) {
                 if (moves[i].pawn == pawn && moves[i].end == end && moves[i].build == build) {
@@ -637,7 +607,7 @@ int main(int argc, char *argv[]) {
                 &board,
                 0,
                 human_player_select_move,
-                select_move_by_rollout<50>,
+                select_move_by_rollout<100>,
                 &rng);
         ++counts[winner];
         std::printf("\n");
