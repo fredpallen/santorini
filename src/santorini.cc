@@ -1,10 +1,13 @@
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <limits>
 #include <random>
 #include <tuple>
+#include <vector>
 
 // The board is a 5x5 square of cells.
 constexpr int BOARD_WIDTH = 5;
@@ -93,6 +96,17 @@ struct Move {
     Position start;
     Position end;
     Position build;
+
+    bool operator==(const Move &that) const {
+        return that.pawn == pawn &&
+            that.start == start &&
+            that.end == end &&
+            that.build == build;
+    }
+
+    bool operator!=(const Move &that) const {
+        return !(*this == that);
+    }
 };
 
 using Moves = MaxlenVector<Move, MAX_LEGAL_MOVES>;
@@ -102,6 +116,26 @@ using Moves = MaxlenVector<Move, MAX_LEGAL_MOVES>;
 // From a central cell, there will be eight valid end positions, but from edges
 // and corners there will be fewer.
 using KingMoveEnds = MaxlenVector<Position, 8>;
+
+struct MonteCarloTreeSearchNode {
+    Board board;
+    int wins;
+    int visits;
+    int visited_child_count;
+    int value; // 1 if known win, -1 if known loss, 0 otherwise.
+    MonteCarloTreeSearchNode *parent;
+    std::vector<MonteCarloTreeSearchNode> children;
+
+    MonteCarloTreeSearchNode(
+            Board board, MonteCarloTreeSearchNode *parent = nullptr) :
+        board(board),
+        wins(0),
+        visits(0),
+        visited_child_count(0),
+        value(0),
+        parent(parent)
+    {}
+};
 
 // Pretty-prints the board to stdout.
 void print_board(const Board &board) {
@@ -605,6 +639,238 @@ class HumanPlayer {
         }
 };
 
+class MonteCarloTreeSearchPlayer: public SimplePlayer {
+    public:
+        MonteCarloTreeSearchPlayer(
+                std::chrono::seconds time_limit, std::mt19937 *rng) :
+            SimplePlayer(rng),
+            time_limit_(time_limit) {}
+
+        int select_move(const Board &board, const Moves &moves, int player) {
+            int obvious = get_obvious_move(board, moves, player);
+            if (obvious >= 0) {
+                return obvious;
+            }
+
+            auto blunders = get_blunders(board, moves, player);
+            if (blunders.size() == moves.size()) {
+                // All the moves are losers, so just pick the first one,
+                // you loser.
+                return 0;
+            }
+
+            // Build base nodes for tree search.
+            std::vector<std::pair<int, MonteCarloTreeSearchNode>> nodes;
+            int blunder_index = blunders.size() ? 0 : -1;
+            for (int i = 0; i < moves.size(); ++i) {
+                if (blunder_index >= 0 &&
+                        blunder_index < blunders.size() &&
+                        blunders[blunder_index] == i) {
+                    ++blunder_index;
+                    continue;
+                }
+                nodes.emplace_back(i, board);
+            }
+
+            int unvisited_node_count = nodes.size();
+
+            std::chrono::system_clock clock;
+            const auto start_time = clock.now();
+            int rollout_count = 0;
+            while (true) {
+                // Iterate over rollouts until time expires.
+                if (clock.now() - start_time > time_limit_) {
+                    break;
+                }
+                std::printf("rollout_count = %d\n", rollout_count);
+                ++rollout_count;
+
+                // Pick the node to start with.
+                MonteCarloTreeSearchNode *node = nullptr;
+                if (unvisited_node_count) {
+                    --unvisited_node_count;
+                    std::uniform_int_distribution<int> uni(
+                            0, unvisited_node_count);
+                    int rand = uni(*rng_);
+                    for (int i = 0; i < nodes.size(); ++i) {
+                        if (!nodes[i].second.visits) {
+                            if (rand) {
+                                --rand;
+                            } else {
+                                node = &nodes[i].second;
+                                Move move = moves[nodes[i].first];
+                                node->board.position[player][move.pawn] =
+                                    move.end;
+                                ++node->
+                                    board.height[move.build.x][move.build.y];
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    double best_score = -1;
+                    int total_visits = 0;
+                    for (const auto &n : nodes) {
+                        total_visits += n.second.visits;
+                    }
+                    for (auto &n : nodes) {
+                        double score =
+                            static_cast<double>(n.second.wins)/n.second.visits +
+                            std::sqrt(2.0*std::log(total_visits)/n.second.visits);
+                        if (score > best_score) {
+                            best_score = score;
+                            node = &n.second;
+                        }
+                    }
+                }
+
+                // Search down the chosen node.
+                int current_player = player;
+                while (true) {
+                    current_player = 1 - current_player;
+                    if (!node->visits) {
+                        // Fill in the children of this node.
+                        Moves moves =
+                            get_legal_moves(node->board, current_player);
+                        if (!moves.size()) {
+                            node->value = -1;
+                            for (; node; node = node->parent) {
+                                ++node->visits;
+                                if (current_player != player) {
+                                    ++node->wins;
+                                }
+                            }
+                            break;
+                        }
+                        int obvious =
+                            get_obvious_move(node->board, moves, current_player);
+                        if (obvious >= 0) {
+                            Move move = moves[obvious];
+                            // This is the only child.
+                            if (node->board.height[move.end.x][move.end.y] ==
+                                    MAX_HEIGHT - 1) {
+                                // This is a win for current_player.
+                                node->value = 1;
+                                for (; node; node = node->parent) {
+                                    ++node->visits;
+                                    if (current_player == player) {
+                                        ++node->wins;
+                                    }
+                                }
+                                break;
+                            } else {
+                                // It's not a win, but it is obvious, so it's
+                                // the only child we will consider.
+                                node->children.emplace_back(node->board, node);
+                                node->children.back()
+                                    .board.position[current_player][move.pawn] =
+                                    move.end;
+                                ++node->children.back()
+                                    .board.height[move.build.x][move.build.y];
+                            }
+                        } else {
+                            auto blunders = get_blunders(board, moves, player);
+                            if (blunders.size() == moves.size()) {
+                                // All the moves are losers.
+                                //
+                                // This is a win for the other player.
+                                node->value = -1;
+                                for (; node; node = node->parent) {
+                                    ++node->visits;
+                                    if (current_player != player) {
+                                        ++node->wins;
+                                    }
+                                }
+                                break;
+                            }
+                            int blunder_index = blunders.size() ? 0 : -1;
+                            for (int i = 0; i < moves.size(); ++i) {
+                                if (blunder_index >= 0 &&
+                                        blunder_index < blunders.size() &&
+                                        blunders[blunder_index] == i) {
+                                    ++blunder_index;
+                                    continue;
+                                }
+                                Move move = moves[i];
+                                node->children.emplace_back(node->board, node);
+                                node->
+                                    children.back()
+                                    .board.position[current_player][move.pawn] =
+                                    move.end;
+                                ++node->
+                                    children.back()
+                                    .board.height[move.build.x][move.build.y];
+                            }
+                        }
+                    }
+
+                    if (node->value) {
+                        // Value already known for this node.
+                        // Do not search any deeper on this path.
+                        for (; node; node = node->parent) {
+                            ++node->visits;
+                            bool is_win =
+                                (node->value == 1 &&
+                                 current_player == player) ||
+                                (node->value == -1 &&
+                                 current_player != player);
+                            if (is_win) {
+                                ++node->wins;
+                            }
+                        }
+                        break;
+                    }
+
+                    // Select the next node for the rollout.
+                    int unvisited_node_count =
+                        node->children.size() - node->visited_child_count;
+                    if (unvisited_node_count) {
+                        ++node->visited_child_count;
+                        std::uniform_int_distribution<int> uni(
+                                0, unvisited_node_count - 1);
+                        int rand = uni(*rng_);
+                        for (int i = 0; i < node->children.size(); ++i) {
+                            if (rand) {
+                                --rand;
+                            } else {
+                                node = &node->children[i];
+                                break;
+                            }
+                        }
+                    } else {
+                        double best_score = 0;
+                        int total_visits = 0;
+                        for (const auto &n : node->children) {
+                            total_visits += n.visits;
+                        }
+                        for (auto &n : node->children) {
+                            double score =
+                                static_cast<double>(n.wins) / n.visits +
+                                std::sqrt(2.0*std::log(total_visits)/n.visits);
+                            if (score > best_score) {
+                                best_score = score;
+                                node = &n;
+                            }
+                        }
+                    }
+                }
+            }
+            // Pick the index with the most visits.
+            int best_visit_count = 0;
+            int best_index = 0;
+            for (const auto &n : nodes) {
+                if (n.second.visits > best_visit_count) {
+                    best_visit_count = n.second.visits;
+                    best_index = n.first;
+                }
+            }
+            return best_index;
+        }
+
+    private:
+        std::chrono::seconds time_limit_;
+};
+
 int main(int argc, char *argv[]) {
     std::random_device random_device;
     unsigned int seed = argc > 1 ? std::stoul(argv[1]) : random_device();
@@ -612,8 +878,8 @@ int main(int argc, char *argv[]) {
     std::mt19937 rng(seed);
 
     int counts[2] = {0, 0};
-    HumanPlayer player0;
-    SimpleRolloutPlayer player1(100, &rng);
+    MonteCarloTreeSearchPlayer player0(std::chrono::seconds(1), &rng);
+    HumanPlayer player1;
     for (int trial = 0; trial < 1; ++trial) {
         Board board;
         std::memset(&board, 0, sizeof(board));
