@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -676,14 +677,11 @@ class MonteCarloTreeSearchPlayer: public SimplePlayer {
 
             std::chrono::system_clock clock;
             const auto start_time = clock.now();
-            int rollout_count = 0;
-            while (true) {
+            for (int rollout_count = 0; ; ++rollout_count) {
                 // Iterate over rollouts until time expires.
                 if (clock.now() - start_time > time_limit_) {
                     break;
                 }
-                std::printf("rollout_count = %d\n", rollout_count);
-                ++rollout_count;
 
                 // Pick the node to start with.
                 MonteCarloTreeSearchNode *node = nullptr;
@@ -709,6 +707,7 @@ class MonteCarloTreeSearchPlayer: public SimplePlayer {
                     }
                 } else {
                     double best_score = -1;
+                    std::vector<MonteCarloTreeSearchNode *> best_nodes;
                     int total_visits = 0;
                     for (const auto &n : nodes) {
                         total_visits += n.second.visits;
@@ -719,9 +718,17 @@ class MonteCarloTreeSearchPlayer: public SimplePlayer {
                             std::sqrt(2.0*std::log(total_visits)/n.second.visits);
                         if (score > best_score) {
                             best_score = score;
-                            node = &n.second;
+                            best_nodes.clear();
+                            best_nodes.push_back(&n.second);
+                        } else if (score == best_score) {
+                            best_nodes.push_back(&n.second);
                         }
                     }
+                    // Select a random node from among those with the
+                    // same score.
+                    std::uniform_int_distribution<int> uni(
+                            0, best_nodes.size() - 1);
+                    node = best_nodes[uni(*rng_)];
                 }
 
                 // Search down the chosen node.
@@ -821,6 +828,8 @@ class MonteCarloTreeSearchPlayer: public SimplePlayer {
                         break;
                     }
 
+                    assert(node->children.size());
+
                     // Select the next node for the rollout.
                     int unvisited_node_count =
                         node->children.size() - node->visited_child_count;
@@ -839,6 +848,7 @@ class MonteCarloTreeSearchPlayer: public SimplePlayer {
                         }
                     } else {
                         double best_score = 0;
+                        std::vector<MonteCarloTreeSearchNode *> best_nodes;
                         int total_visits = 0;
                         for (const auto &n : node->children) {
                             total_visits += n.visits;
@@ -849,9 +859,17 @@ class MonteCarloTreeSearchPlayer: public SimplePlayer {
                                 std::sqrt(2.0*std::log(total_visits)/n.visits);
                             if (score > best_score) {
                                 best_score = score;
-                                node = &n;
+                                best_nodes.clear();
+                                best_nodes.push_back(&n);
+                            } else if (score == best_score) {
+                                best_nodes.push_back(&n);
                             }
                         }
+                        // Select a random node from among those with the
+                        // same score.
+                        std::uniform_int_distribution<int> uni(
+                                0, best_nodes.size() - 1);
+                        node = best_nodes[uni(*rng_)];
                     }
                 }
             }
@@ -879,8 +897,8 @@ int main(int argc, char *argv[]) {
 
     int counts[2] = {0, 0};
     MonteCarloTreeSearchPlayer player0(std::chrono::seconds(1), &rng);
-    HumanPlayer player1;
-    for (int trial = 0; trial < 1; ++trial) {
+    SimpleRolloutPlayer player1(1000, &rng);
+    for (int trial = 0; trial < 10; ++trial) {
         Board board;
         std::memset(&board, 0, sizeof(board));
         int cell_indices[BOARD_WIDTH * BOARD_WIDTH];
