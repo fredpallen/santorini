@@ -318,6 +318,9 @@ int play_game(Board *board, int next, P0 *p0, P1 *p1) {
         // Update board due to selected move.
         board->position[next][move.pawn] = move.end;
         ++board->height[move.build.x][move.build.y];
+        if (verbose) {
+            print_board(*board);
+        }
         // Go to next player.
         next = 1 - next;
     }
@@ -437,12 +440,22 @@ class SimplePlayer {
         }
 };
 
+struct Node {
+    int index;
+    int wins;
+    int visits;
+};
+
 class SimpleRolloutPlayer : public SimplePlayer {
     public:
-        SimpleRolloutPlayer(int rollout_count, std::mt19937 *rng)
-            : SimplePlayer(rng), rollout_count_(rollout_count) {}
+        SimpleRolloutPlayer(
+                std::chrono::milliseconds time_limit, std::mt19937 *rng)
+            : SimplePlayer(rng), time_limit_(time_limit) {}
 
         int select_move(const Board &board, const Moves &moves, int player) {
+            std::chrono::system_clock clock;
+            const auto start_time = clock.now();
+
             int obvious = get_obvious_move(board, moves, player);
             if (obvious >= 0) {
                 return obvious;
@@ -454,42 +467,163 @@ class SimpleRolloutPlayer : public SimplePlayer {
                 // you loser.
                 return 0;
             }
-            SimplePlayer player_object(rng_);
-            int best_index = -1;
-            double best_score = std::numeric_limits<double>::lowest();
+
+            // Collect moves that aren't blunders.
+            MaxlenVector<Node, MAX_LEGAL_MOVES> nodes;
             int blunder_index = 0;
             for (int i = 0; i < moves.size(); ++i) {
                 if (blunders.size() && i == blunders[blunder_index]) {
                     ++blunder_index;
                     continue;
                 }
-                // Roll this move out several times using SimplePlayer for both
-                // players.
+                Node node;
+                node.index = i;
+                node.wins = 0;
+                node.visits = 0;
+                nodes.push_back(node);
+            }
+
+            SimplePlayer player_object(rng_);
+            double rollout_count = 0;
+            for (int n = 0; ; n = (n + 1) % nodes.size()) {
+                // Keep going until time expires.
+                if (clock.now() - start_time > time_limit_) {
+                    break;
+                }
+                // Play games from here using SimplePlayer for both sides.
                 Board moved_board = board;
-                Move move = moves[i];
+                Move move = moves[nodes[n].index];
                 moved_board.position[player][move.pawn] = move.end;
                 ++moved_board.height[move.build.x][move.build.y];
-                double payoff = 0;
-                for (int trial = 0; trial < rollout_count_; ++trial) {
+                for (int trial = 0;
+                        trial < 100;
+                        ++trial, ++rollout_count, ++nodes[n].visits) {
                     Board rollout_board = moved_board;
                     int winner = play_game(
                             &rollout_board,
                             1 - player,
                             &player_object,
                             &player_object);
-                    payoff += (winner == player) ? 1 : -1;
+                    nodes[n].wins += (winner == player) ? 1 : 0;
                 }
-                double average_payoff = payoff / rollout_count_;
-                if (average_payoff > best_score) {
-                    best_score = average_payoff;
-                    best_index = i;
+            }
+            std::printf("Rollout count = %.0f\n", rollout_count);
+
+            int best_index = -1;
+            double best_ratio = std::numeric_limits<double>::lowest();
+            for (const auto &node : nodes) {
+                double ratio = static_cast<double>(node.wins) / node.visits;
+                if (ratio > best_ratio) {
+                    best_ratio = ratio;
+                    best_index = node.index;
+                }
+            }
+            std::printf("Best ratio = %f\n", best_ratio);
+            return best_index;
+        }
+
+    private:
+        std::chrono::milliseconds time_limit_;
+};
+
+class ShallowUcbRolloutPlayer : public SimplePlayer {
+    public:
+        ShallowUcbRolloutPlayer(
+                std::chrono::milliseconds time_limit, std::mt19937 *rng)
+            : SimplePlayer(rng), time_limit_(time_limit) {}
+
+        int select_move(const Board &board, const Moves &moves, int player) {
+            std::chrono::system_clock clock;
+            const auto start_time = clock.now();
+
+            int obvious = get_obvious_move(board, moves, player);
+            if (obvious >= 0) {
+                return obvious;
+            }
+
+            auto blunders = get_blunders(board, moves, player);
+            if (blunders.size() == moves.size()) {
+                // All the moves are losers, so just pick the first one,
+                // you loser.
+                return 0;
+            }
+
+            SimplePlayer player_object(rng_);
+            MaxlenVector<Node, MAX_LEGAL_MOVES> nodes;
+
+            double rollout_count = 0;
+
+            // Try every non-blunder move once.
+            int blunder_index = 0;
+            for (int i = 0; i < moves.size(); ++i, ++rollout_count) {
+                if (blunders.size() && i == blunders[blunder_index]) {
+                    ++blunder_index;
+                    continue;
+                }
+                Board rollout_board = board;
+                Move move = moves[i];
+                rollout_board.position[player][move.pawn] = move.end;
+                ++rollout_board.height[move.build.x][move.build.y];
+                int winner =
+                    play_game(
+                            &rollout_board,
+                            1 - player,
+                            &player_object,
+                            &player_object);
+                Node node;
+                node.index = i;
+                node.wins = (winner == player) ? 1 : 0;
+                node.visits = 1;
+                nodes.push_back(node);
+            }
+
+            // Perform the rest of the rollouts.
+            while (clock.now() < start_time + time_limit_) {
+                ++rollout_count;
+                double best_bound = 0;
+                int best_index = 0;
+                double log_total_visits = std::log(rollout_count);
+                for (int i = 0; i < nodes.size(); ++i) {
+                    double bound =
+                        static_cast<double>(nodes[i].wins) / nodes[i].visits +
+                        std::sqrt(2.0 * log_total_visits / nodes[i].visits);
+                    if (bound > best_bound) {
+                        best_bound = bound;
+                        best_index = i;
+                    }
+                }
+                Node *node = &nodes[best_index];
+                Board rollout_board = board;
+                Move move = moves[node->index];
+                rollout_board.position[player][move.pawn] = move.end;
+                ++rollout_board.height[move.build.x][move.build.y];
+                int winner =
+                    play_game(
+                            &rollout_board,
+                            1 - player,
+                            &player_object,
+                            &player_object);
+                ++node->visits;
+                node->wins += (winner == player) ? 1 : 0;
+            }
+
+            std::printf("Rollout count = %0.f\n", rollout_count);
+
+            // Return the index with the best wins/visits ratio.
+            double best_ratio = 0.0;
+            int best_index = 0;
+            for (const auto &node : nodes) {
+                double ratio = static_cast<double>(node.wins) / node.visits;
+                if (ratio > best_ratio) {
+                    best_ratio = ratio;
+                    best_index = node.index;
                 }
             }
             return best_index;
         }
 
     private:
-        int rollout_count_;
+        std::chrono::milliseconds time_limit_;
 };
 
 class HumanPlayer {
@@ -677,7 +811,8 @@ class MonteCarloTreeSearchPlayer: public SimplePlayer {
 
             std::chrono::system_clock clock;
             const auto start_time = clock.now();
-            for (int rollout_count = 0; ; ++rollout_count) {
+            int rollout_count = 0;
+            for (; ; ++rollout_count) {
                 // Iterate over rollouts until time expires.
                 if (clock.now() - start_time > time_limit_) {
                     break;
@@ -873,12 +1008,17 @@ class MonteCarloTreeSearchPlayer: public SimplePlayer {
                     }
                 }
             }
-            // Pick the index with the most visits.
-            int best_visit_count = 0;
+
+            std::printf("Rollout count = %d\n", rollout_count);
+
+            // Pick the index with the best win ratio.
+            double best_win_ratio = 0;
             int best_index = 0;
             for (const auto &n : nodes) {
-                if (n.second.visits > best_visit_count) {
-                    best_visit_count = n.second.visits;
+                double win_ratio =
+                    static_cast<double>(n.second.wins) / n.second.visits;
+                if (win_ratio > best_win_ratio) {
+                    best_win_ratio = win_ratio;
                     best_index = n.first;
                 }
             }
@@ -896,9 +1036,9 @@ int main(int argc, char *argv[]) {
     std::mt19937 rng(seed);
 
     int counts[2] = {0, 0};
-    MonteCarloTreeSearchPlayer player0(std::chrono::seconds(1), &rng);
-    SimpleRolloutPlayer player1(1000, &rng);
-    for (int trial = 0; trial < 10; ++trial) {
+    HumanPlayer player0;
+    SimpleRolloutPlayer player1(std::chrono::seconds(60), &rng);
+    for (int trial = 0; trial < 100; ++trial) {
         Board board;
         std::memset(&board, 0, sizeof(board));
         int cell_indices[BOARD_WIDTH * BOARD_WIDTH];
@@ -916,11 +1056,15 @@ int main(int argc, char *argv[]) {
 
         print_board(board);
         std::printf("\n");
-        int winner = play_game<false>(&board, 0, &player0, &player1);
+        int winner = play_game<true>(&board, 0, &player0, &player1);
         ++counts[winner];
         std::printf("\n");
         print_board(board);
-        std::printf("Trial %3d won by player %d.\n", trial, winner);
+        std::printf("Trial %3d won by player %d (%d to %d).\n",
+                trial,
+                winner,
+                counts[0],
+                counts[1]);
     }
     std::printf(
             "\nPlayer 0 wins %d times, player 1 wins %d times.\n",
