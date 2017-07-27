@@ -92,6 +92,17 @@ struct State {
     bool is_blocked(const Position &p) const {
         return height[p.y][p.x] == MAX_HEIGHT || is_pawn_at(p);
     }
+
+    bool heights_can_happen_given(const State &s) const {
+        for (int y = 0; y < BOARD_WIDTH; ++y) {
+            for (int x = 0; x < BOARD_WIDTH; ++x) {
+                if (s.height[y][x] < height[y][x]) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
 };
 
 struct Play {
@@ -267,6 +278,7 @@ class MonteCarlo {
             return -1;
         }
 
+    private:
         Play get_next_play(const State &state) {
             max_depth_ = 0;
             Plays legal = get_legal_plays(state);
@@ -289,6 +301,7 @@ class MonteCarlo {
             cout << "Game count = " << games << "\n";
 
             Play best_play;
+            State best_next_state = state;
             double best_win_percent = -1;
             for (const Play &play : legal) {
                 State next_state = get_next_state(state, play);
@@ -300,10 +313,12 @@ class MonteCarlo {
                 if (win_percent > best_win_percent) {
                     best_win_percent = win_percent;
                     best_play = play;
+                    best_next_state = next_state;
                 }
             }
             cout << "max depth = " << max_depth_ << "\n";
             cout << "win percent = " << best_win_percent << "\n";
+            erase_early_states(best_next_state);
             return best_play;
         }
 
@@ -376,7 +391,21 @@ class MonteCarlo {
             }
         }
 
-    private:
+        void erase_early_states(const State &state) {
+            cout << "Before erase: state_counts_.size() == "
+                << state_counts_.size() << ".\n";
+            for (auto iter = state_counts_.begin();
+                    iter != state_counts_.end();) {
+                if (!iter->first.heights_can_happen_given(state)) {
+                    iter = state_counts_.erase(iter);
+                } else {
+                    ++iter;
+                }
+            }
+            cout << "After erase: state_counts_.size() == "
+                << state_counts_.size() << ".\n";
+        }
+
         chrono::milliseconds time_limit_;
         int max_depth_;
         unordered_map<State, Counts> state_counts_;
