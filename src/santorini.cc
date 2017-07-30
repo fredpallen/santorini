@@ -134,6 +134,7 @@ struct Counts {
     double wins;
     double plays;
 
+    Counts() : wins(0), plays(0) {}
     Counts(double wins, double plays) : wins(wins), plays(plays) {}
 };
 
@@ -511,6 +512,7 @@ class MonteCarlo {
                 double total = 0.0;
                 bool all_seen = true;
                 State next_state;
+                SmallVec<Counts, MAX_LEGAL_MOVES> play_counts;
                 for (const Play &play : legal) {
                     next_state = get_next_state(this_state, play);
                     auto iter = state_counts_.find(next_state);
@@ -518,19 +520,19 @@ class MonteCarlo {
                         all_seen = false;
                         break;
                     }
+                    play_counts.push_back(iter->second);
                     total += iter->second.plays;
                 }
                 if (all_seen) {
                     double log_total = log(total);
                     double best_score = -1;
-                    for (const Play &play : legal) {
+                    for (int i = 0; i < legal.size(); ++i) {
+                        Play play = legal[i];
+                        Counts counts = play_counts[i];
                         State s = get_next_state(this_state, play);
-                        auto iter = state_counts_.find(s);
-                        // Should not happen if all_seen.
-                        assert(iter != state_counts_.end());
                         double score =
-                            iter->second.wins/iter->second.plays
-                            + sqrt(2*log_total/iter->second.plays);
+                            counts.wins/counts.plays
+                            + sqrt(2*log_total/counts.plays);
                         if (score > best_score) {
                             best_score = score;
                             next_state = s;
