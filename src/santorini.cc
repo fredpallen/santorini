@@ -78,6 +78,19 @@ struct State {
         return 0 == memcmp(this, &that, sizeof(that));
     }
 
+    int get_height(const Position &p) const {
+        return height[p.y][p.x];
+    }
+
+    int get_height(int player, int pawn) const {
+        Position p = position[player][pawn];
+        return height[p.y][p.x];
+    }
+
+    int increment_height(const Position &p) {
+        return ++height[p.y][p.x];
+    }
+
     bool is_pawn_at(const Position &p) const {
         for (int player = 0; player < 2; ++player) {
             for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
@@ -153,7 +166,7 @@ namespace std {
 }
 
 // Finds the neighboring positions of a given position.
-Neighbors neighbors(const Position &p) {
+Neighbors get_neighbors(const Position &p) {
     Neighbors results;
     for (int dy = -1; dy < 2; ++dy) {
         for (int dx = -1; dx < 2; ++dx) {
@@ -217,7 +230,7 @@ State get_next_state(const State &state, const Play &play) {
     State result(state);
     result.player = 1 - state.player;
     result.position[state.player][play.pawn] = play.end;
-    result.height[play.build.y][play.build.x]++;
+    result.increment_height(play.build);
     return result;
 }
 
@@ -225,9 +238,8 @@ Plays get_legal_plays(const State &state) {
     Plays plays;
     for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
         Position start = state.position[state.player][pawn];
-        for (Position end : neighbors(start)) {
-            int height_change =
-                state.height[end.y][end.x] - state.height[start.y][start.x];
+        for (Position end : get_neighbors(start)) {
+            int height_change = state.get_height(end) - state.get_height(start);
             if (state.is_blocked(end) || height_change > 1) {
                 continue;
             }
@@ -236,7 +248,7 @@ Plays get_legal_plays(const State &state) {
             play.end = end;
             play.build = start;
             plays.push_back(play);
-            for (Position build : neighbors(end)) {
+            for (Position build : get_neighbors(end)) {
                 if (state.is_blocked(build)) {
                     continue;
                 }
@@ -252,7 +264,7 @@ int get_winner(const State &state) {
     for (int player = 0; player < 2; ++player) {
         for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
             Position p = state.position[player][pawn];
-            if (state.height[p.y][p.x] == MAX_HEIGHT - 1) {
+            if (state.get_height(p) == MAX_HEIGHT - 1) {
                 return player;
             }
         }
@@ -263,6 +275,134 @@ int get_winner(const State &state) {
     return -1;
 }
 
+// Simple AI that looks ahead to the opponent's next move.
+class SimplePlayer {
+    public:
+        SimplePlayer(unsigned int seed) : rng_(seed) {}
+
+        int select_move(const State &state, const Plays &plays) {
+            int obvious = get_obvious_move(state, plays);
+            if (obvious >= 0) {
+                return obvious;
+            }
+
+            auto blunders = get_blunders(state, plays);
+            if (blunders.size() == plays.size()) {
+                // All the moves are losers, so just pick the first one,
+                // you loser.
+                return 0;
+            }
+
+            // Choose at random from among the non-losing moves.
+            std::uniform_int_distribution<int> uni(
+                    0, plays.size() - blunders.size() - 1);
+            int rand = uni(rng_);
+            int skip = rand;
+            int base = 0;
+            for (int blunder : blunders) {
+                if (base + skip < blunder) {
+                    return base + skip;
+                }
+                skip -= blunder - base;
+                base = blunder + 1;
+            }
+
+            if (base + skip >= plays.size()) {
+                // It shouldn't be possible to get here.
+                std::fprintf(
+                        stderr,
+                        "Couldn't find %d winners from "
+                        "%d moves minus %d losers\n",
+                        rand, plays.size(), blunders.size());
+                std::exit(EXIT_FAILURE);
+            }
+
+            return base + skip;
+        }
+
+    protected:
+        int get_obvious_move(const State &state, const Plays &plays) {
+            // First see if any of the moves wins the game.
+            // If so, select that move.
+            for (int i = 0; i < plays.size(); ++i) {
+                Play play = plays[i];
+                if (state.get_height(play.end) == MAX_HEIGHT - 1) {
+                    return i;
+                }
+            }
+
+            // Check if a single move stops the other player from winning.
+            for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
+                Position them = state.position[1 - state.player][pawn];
+                if (state.get_height(them) == MAX_HEIGHT - 2) {
+                    // This pawn is at the right height to win on the next move.
+                    for (Position end : get_neighbors(them)) {
+                        if (state.get_height(end) == MAX_HEIGHT - 1) {
+                            // This move will win the game for the opponent,
+                            // so try to build here. We know we can't move here
+                            // because we checked that above.
+                            int stopper_index = -1;
+                            bool stopper_seen = false;
+                            for (int i = 0; i < plays.size(); ++i) {
+                                if (plays[i].build == end) {
+                                    if (stopper_seen) {
+                                        // More than one way to stop them, so
+                                        // it's not obvious what to do.
+                                        return -1;
+                                    }
+                                    stopper_seen = true;
+                                    stopper_index = i;
+                                }
+                            }
+                            if (stopper_seen) {
+                                // This stops this particular winning move for
+                                // the opponent, but the opponent may have other
+                                // winning moves. In any case, we can only stop
+                                // one so do not bother checking for others.
+                                return stopper_index;
+                            } else {
+                                // The other user is going to win and we have no
+                                // way to stop it, so just give up.
+                                return 0;
+                            }
+                        }
+                    }
+                }
+            }
+            // No obvious move found, return -1.
+            return -1;
+        }
+
+        SmallVec<int, MAX_LEGAL_MOVES> get_blunders(
+                const State &state, const Plays &plays) {
+            SmallVec<int, MAX_LEGAL_MOVES> blunders;
+            for (int i = 0; i < plays.size(); ++i) {
+                Position build = plays[i].build;
+                if (state.get_height(build) == MAX_HEIGHT - 2) {
+                    // This makes a tower of winning height,
+                    // make sure no opponent is nearby.
+                    for (int pawn = 0; pawn < 2; ++pawn) {
+                        Position them = state.position[1 - state.player][pawn];
+                        int dx = them.x - build.x;
+                        int dy = them.y - build.y;
+                        int d2 = dx*dx + dy*dy;  // Squared horizontal distance.
+                        int height = state.get_height(them);
+                        if (d2 <= 2 && height == MAX_HEIGHT - 2) {
+                            // Opponent is close enough, vertically and
+                            // horizontally, so do not choose this move.
+                            blunders.push_back(i);
+                            break;
+                        }
+                    }
+                }
+            }
+            return blunders;
+        }
+
+        std::mt19937 rng_;
+};
+
+template <bool DO_IMMEDIATE_WIN_CHECK>
 class MonteCarlo {
     public:
         MonteCarlo(chrono::milliseconds time_limit) : time_limit_(time_limit) {}
@@ -289,6 +429,14 @@ class MonteCarlo {
                 return play;
             } else if (legal.size() == 1) {
                 return legal[0];
+            }
+
+            if (DO_IMMEDIATE_WIN_CHECK) {
+                for (Play play : legal) {
+                    if (state.get_height(play.end) == MAX_HEIGHT - 1) {
+                        return play;
+                    }
+                }
             }
 
             int games = 0;
@@ -329,9 +477,39 @@ class MonteCarlo {
             int winner = -1;
             State this_state = state;
             for (int t = 0;; ++t) {
+                Plays legal = get_legal_plays(this_state);
+
+                if (DO_IMMEDIATE_WIN_CHECK) {
+                    // Check for an immediate winning move.
+                    for (int pawn = 0; pawn < 2; ++pawn) {
+                        Position p = this_state.position[this_state.player][pawn];
+                        if (this_state.get_height(p) == MAX_HEIGHT - 2) {
+                            // This pawn is just below the winning height.
+                            //
+                            // If it has a neighbor at winning height, then there
+                            // is a winning move for the current player.
+                            for (Position n : get_neighbors(p)) {
+                                if (this_state.get_height(n) == MAX_HEIGHT - 1) {
+                                    winner = this_state.player;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (winner >= 0) {
+                        // Mark all moves ending on MAX_HEIGHT - 1 as visited.
+                        for (Play play : legal) {
+                            if (this_state.get_height(play.end) == MAX_HEIGHT - 1) {
+                                visited_states.emplace(get_next_state(this_state, play));
+                            }
+                        }
+                        break;
+                    }
+                    // If we get here, no immediate winning move was found.
+                }
+
                 double total = 0.0;
                 bool all_seen = true;
-                Plays legal = get_legal_plays(this_state);
                 State next_state;
                 for (const Play &play : legal) {
                     next_state = get_next_state(this_state, play);
@@ -432,14 +610,17 @@ int play_game(State *state, P0 *p0, P1 *p1) {
             p1->select_move(*state, plays) :
             p0->select_move(*state, plays);
         Play play = plays[index];
-        if (state->height[play.end.y][play.end.x] == MAX_HEIGHT - 1) {
+        if (state->get_height(play.end) == MAX_HEIGHT - 1) {
             // Next player wins because they stepped to the winning height.
+            int winner = state->player;
             if (verbose) {
                 printf(
                         "Player %d wins by stepping onto (%d,%d)\n",
                         state->player, play.end.x, play.end.y);
+                *state = get_next_state(*state, play);
+                print_state(*state);
             }
-            return state->player;
+            return winner;
         }
         if (verbose) {
             printf(
@@ -452,14 +633,96 @@ int play_game(State *state, P0 *p0, P1 *p1) {
                     play.build.y);
         }
         // Update board due to selected move.
-        state->position[state->player][play.pawn] = play.end;
-        ++state->height[play.build.y][play.build.x];
-        state->player = 1 - state->player;
+        *state = get_next_state(*state, play);
         if (verbose) {
             print_state(*state);
         }
     }
 }
+
+class SimpleRolloutPlayer : public SimplePlayer {
+    public:
+        SimpleRolloutPlayer(
+                std::chrono::milliseconds time_limit, unsigned int seed)
+            : SimplePlayer(seed), time_limit_(time_limit) {}
+
+        int select_move(const State &state, const Plays &plays) {
+            std::chrono::system_clock clock;
+            const auto start_time = clock.now();
+
+            int obvious = get_obvious_move(state, plays);
+            if (obvious >= 0) {
+                return obvious;
+            }
+
+            auto blunders = get_blunders(state, plays);
+            if (blunders.size() == plays.size()) {
+                // All the moves are losers, so just pick the first one,
+                // you loser.
+                return 0;
+            }
+
+            // Collect moves that aren't blunders.
+            SmallVec<Node, MAX_LEGAL_MOVES> nodes;
+            int blunder_index = 0;
+            for (int i = 0; i < plays.size(); ++i) {
+                if (blunders.size() && i == blunders[blunder_index]) {
+                    ++blunder_index;
+                    continue;
+                }
+                Node node;
+                node.index = i;
+                node.wins = 0;
+                node.visits = 0;
+                nodes.push_back(node);
+            }
+
+            uniform_int_distribution<unsigned int> seed_dist;
+            SimplePlayer player_object(seed_dist(rng_));
+            double rollout_count = 0;
+            for (int n = 0; ; n = (n + 1) % nodes.size()) {
+                // Keep going until time expires.
+                if (clock.now() - start_time > time_limit_) {
+                    break;
+                }
+                // Play games from here using SimplePlayer for both sides.
+                Play play = plays[nodes[n].index];
+                State next_state = get_next_state(state, play);
+                for (int trial = 0;
+                        trial < 100;
+                        ++trial, ++rollout_count, ++nodes[n].visits) {
+                    State rollout_state = next_state;
+                    int winner = play_game(
+                            &rollout_state,
+                            &player_object,
+                            &player_object);
+                    nodes[n].wins += (winner == state.player) ? 1 : 0;
+                }
+            }
+            std::printf("Rollout count = %.0f\n", rollout_count);
+
+            int best_index = -1;
+            double best_ratio = std::numeric_limits<double>::lowest();
+            for (const auto &node : nodes) {
+                double ratio = static_cast<double>(node.wins) / node.visits;
+                if (ratio > best_ratio) {
+                    best_ratio = ratio;
+                    best_index = node.index;
+                }
+            }
+            std::printf("Best ratio = %f\n", best_ratio);
+            return best_index;
+        }
+
+    private:
+        struct Node {
+            int index;
+            int wins;
+            int visits;
+        };
+
+        std::chrono::milliseconds time_limit_;
+};
 
 class HumanPlayer {
     public:
@@ -616,16 +879,14 @@ int main(int argc, char *argv[]) {
     mt19937 rng(seed);
 
     int counts[2] = {0, 0};
-    MonteCarlo player0(chrono::minutes(5));
-    HumanPlayer player1;
+    HumanPlayer player0;
+    MonteCarlo<true> player1(chrono::minutes(2));
     for (int trial = 0; trial < 100; ++trial) {
         State state = get_start_state();
         print_state(state);
         printf("\n");
         int winner = play_game<true>(&state, &player0, &player1);
         ++counts[winner];
-        printf("\n");
-        print_state(state);
         printf("Trial %3d won by player %d (%d to %d).\n",
                 trial,
                 winner,
