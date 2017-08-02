@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -224,6 +225,20 @@ State get_next_state(const State &state, const Play &play) {
   return result;
 }
 
+bool has_legal_play(const State &state) {
+  for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
+    Position start = state.position[state.player][pawn];
+    for (Position end : get_neighbors(start)) {
+      int height_change = state.get_height(end) - state.get_height(start);
+      if (state.is_blocked(end) || height_change > 1) {
+        continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 Plays get_legal_plays(const State &state) {
   Plays plays;
   for (int pawn = 0; pawn < PAWN_COUNT; ++pawn) {
@@ -259,7 +274,7 @@ int get_winner(const State &state) {
       }
     }
   }
-  if (!get_legal_plays(state).size()) {
+  if (!has_legal_play(state)) {
     return 1 - state.player;
   }
   return -1;
@@ -406,7 +421,6 @@ public:
     return -1;
   }
 
-private:
   Play get_next_play(const State &state) {
     max_depth_ = 0;
     Plays legal = get_legal_plays(state);
@@ -457,6 +471,7 @@ private:
     return best_play;
   }
 
+private:
   void run_simulation(const State &state) {
     unordered_set<State> visited_states;
 
@@ -840,16 +855,14 @@ private:
   }
 };
 
-int main(int argc, char *argv[]) {
-  random_device random_device;
-  unsigned int seed = argc > 1 ? stoul(argv[1]) : random_device();
+void ref_games(unsigned int seed) {
   printf("Seed = %u\n", seed);
   mt19937 rng(seed);
 
   int counts[2] = {0, 0};
-  MonteCarlo<true> player0(chrono::minutes(2));
-  MonteCarlo<false> player1(chrono::minutes(2));
-  for (int trial = 0; trial < 100; ++trial) {
+  MonteCarlo<true> player0(chrono::seconds(10));
+  MonteCarlo<true> player1(chrono::seconds(10));
+  for (int trial = 0; trial < 1; ++trial) {
     State state = get_start_state();
     print_state(state);
     printf("\n");
@@ -860,4 +873,27 @@ int main(int argc, char *argv[]) {
   }
   printf("\nPlayer 0 wins %d times, player 1 wins %d times.\n", counts[0],
          counts[1]);
+}
+
+void evaluate_starting_positions() {
+  fstream fs("starting_positions.txt", fstream::in);
+  for (int i = 0; fs; ++i) {
+    State state = get_start_state();
+    fs
+      >> state.position[0][0].x >> state.position[0][0].y
+      >> state.position[0][1].x >> state.position[0][1].y
+      >> state.position[1][0].x >> state.position[1][0].y
+      >> state.position[1][1].x >> state.position[1][1].y;
+
+    MonteCarlo<true> player(chrono::minutes(2));
+    // TODO: Get victory percentage.
+    player.get_next_play(state);
+  }
+}
+
+int main() {
+//  random_device random_device;
+//  unsigned int seed = argc > 1 ? stoul(argv[1]) : random_device();
+
+  evaluate_starting_positions();
 }
